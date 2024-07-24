@@ -1,0 +1,116 @@
+function onOpen() {  
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('Correos')
+      .addItem('1. Actualizar enlaces de archivos', 'actualizarEnlaces')
+      .addItem('2. Enviar correos', 'enviarCorreos')
+      .addToUi();
+}
+
+function actualizarEnlaces() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var fila_inicial = 2;
+  var columna_nombre = 1;
+  var columna_archivo = 4;
+  var ultima_fila = sheet.getLastRow();
+  var carpetaId = "Inserta_el_link_aquí"; // ID de la carpeta que contiene los archivos
+
+  for (var i = fila_inicial; i <= ultima_fila; i++) {
+    var nombre = sheet.getRange(i, columna_nombre).getValue();
+    if (nombre) {
+      var nombreNormalizado = normalizarTexto(nombre);
+      var enlaceArchivo = buscarArchivoEnCarpeta(carpetaId, nombreNormalizado);
+      if (enlaceArchivo) {
+        sheet.getRange(i, columna_archivo).setValue(enlaceArchivo);
+      } else {
+        sheet.getRange(i, columna_archivo).setValue("Archivo no encontrado");
+      }
+    }
+  }
+  SpreadsheetApp.flush();
+}
+
+function buscarArchivoEnCarpeta(carpetaId, nombreArchivo) {
+  var carpeta = DriveApp.getFolderById(carpetaId);
+  var archivos = carpeta.getFilesByName(nombreArchivo + "Extension_del_archivo");
+  
+  if (archivos.hasNext()) {
+    var archivo = archivos.next();
+    return archivo.getUrl();
+  } else {
+    Logger.log("Archivo no encontrado para: " + nombreArchivo);
+    return "";
+  }
+}
+
+function normalizarTexto(texto) {
+  return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function enviarCorreos() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var fila_inicial = 2;
+  var columna_inicial = 1;
+  var columna_status = 6;
+  var ultima_fila = sheet.getLastRow();
+
+  var remitente = "Email_del_remitente";
+  var nombre_remitente = "Nombre_del_remitente";
+
+  // Determinar la última fila con datos en la columna A (Nombre)
+  var datos = sheet.getRange(fila_inicial, columna_inicial, ultima_fila - fila_inicial + 1, columna_status).getValues().map(
+    ([nombre, correo, asunto, archivo, mensaje, status], index) => 
+    ({nombre, correo, asunto, archivo, mensaje, status, index})
+  ).filter(dato => dato.correo != "" && dato.status != "Enviado");
+
+  var limiteEnvioCorreos = 70; // Establece un límite para evitar exceder las cuotas de Google
+  var contadorEnvios = 0;
+
+  datos.forEach((dato) => {
+    if (contadorEnvios >= limiteEnvioCorreos) {
+      Logger.log("Límite de envíos alcanzado.");
+      return;
+    }
+
+    try {
+      // Preparamos el archivo adjunto
+      var id_archivo = getFileIdFromUrl(dato.archivo);
+      var adjunto = DriveApp.getFileById(id_archivo).getBlob();
+      // Enviamos el correo
+      MailApp.sendEmail(
+                      dato.correo, 
+                      dato.asunto, 
+                      dato.mensaje, 
+                      {
+                       attachments: [adjunto],
+                       name: nombre_remitente,
+                       replyTo: remitente 
+                      });
+      // Escribimos en la hoja la confirmación del envío
+      sheet.getRange(fila_inicial + dato.index, columna_status).setValue("Enviado");
+      // Recomendado por Google para obligar a la hoja a actualizarse
+      SpreadsheetApp.flush();
+      contadorEnvios++;
+    } catch (e) {
+      Logger.log("Error al enviar correo a " + dato.correo + ": " + e.message);
+      sheet.getRange(fila_inicial + dato.index, columna_status).setValue("Error");
+    }
+  });
+
+  Logger.log(contadorEnvios + " correos enviados.");
+}
+
+function getFileIdFromUrl(url) {
+  let file_id = "";
+
+  // Variantes de la URL
+  const rx1 = /https:\/\/drive\.google\.com\/open\?id=([\w\-_]*)\&?.*/;
+  const rx2 = /https:\/\/drive\.google\.com\/file\/d\/([\w\-_]*)\/.*/;
+
+  if (url.match(rx1)) {
+    file_id = url.replace(rx1, "$1");
+  } else if (url.match(rx2)) {
+    file_id = url.replace(rx2, "$1");
+  }
+
+  return file_id;
+}
